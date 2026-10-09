@@ -1,0 +1,6 @@
+/build/
+/exactz-work/
+/toy_f64.bin
+__pycache__/
+*.pyc
+EXaCTz_breakdown_*.txt
