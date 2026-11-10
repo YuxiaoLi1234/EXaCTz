@@ -1,17 +1,41 @@
-# EXaCTz source release candidate 0.1.0-rc1
+# EXaCTz
 
-This candidate packages the authors' single-GPU and distributed multi-GPU research drivers. It is prepared for review and Linux/NVIDIA validation; it is not yet a tested public release.
+EXaCTz is a CUDA-based research implementation for topology-aware lossy
+compression of three-dimensional scalar fields. This repository contains
+single-GPU and distributed multi-GPU drivers.
 
-| Program | Source |
-|---|---|
-| `EXaCTz_single` | `src/ExtreM_cuda.cu` |
-| `EXaCTz_mpi` | `src/pExtreMz_all_order.cu` |
+> **Research software:** EXaCTz is provided for research and evaluation. It
+> is not a stable compression library or a portable file format, and the
+> current drivers do not provide a standalone decompression command.
 
-Only these drivers and their local header are included. Experimental variants, old binaries, datasets, and benchmark logs are excluded. `SOURCE_MANIFEST.json` records the original working-tree hashes and the packaged hashes. The original workspace is unchanged.
+## Included programs
 
-## Requirements and build
+| Program | Source | Description |
+| --- | --- | --- |
+| `EXaCTz_single` | `src/ExtreM_cuda.cu` | Single-GPU driver |
+| `EXaCTz_mpi` | `src/pExtreMz_all_order.cu` | Distributed multi-GPU driver |
 
-Use Linux, an NVIDIA GPU, a compatible CUDA toolkit/host C++ compiler, CMake >= 3.20, SZ3 headers, Zstandard (library and `zstd` CLI), ZFP, and OpenMP. MPI builds additionally require CUDA-aware MPI: the source passes GPU buffers to MPI. The single-GPU source unconditionally includes MGARD-X and cuSZp; both development installations are required even when selecting SZ3. ZFP CUDA mode requires ZFP built with CUDA support. Optional external backends need `mgard-x`, `tthresh`, or `sperr3d` on PATH. Dependency versions have not yet been pinned by a validated build.
+## Requirements
+
+- Linux
+- NVIDIA GPU and CUDA toolkit
+- CMake 3.20 or newer
+- C++17-compatible host compiler
+- OpenMP
+- SZ3 headers
+- Zstandard library and `zstd` command-line tool
+- ZFP (with CUDA support for CUDA ZFP experiments)
+- MGARD-X and cuSZp for the single-GPU driver
+- CUDA-aware MPI for the distributed driver
+
+Optional compressor backends may require `mgard-x`, `tthresh`, or `sperr3d`
+available on `PATH`. Dependency versions have not been pinned; validate the
+toolkit and library versions on the target system before running experiments.
+
+## Build
+
+Choose the CUDA architecture for the target GPU (`80` is suitable for an
+A100):
 
 ```bash
 cmake -S . -B build \
@@ -21,45 +45,81 @@ cmake -S . -B build \
 cmake --build build -j 8
 ```
 
-Set the CUDA architecture for your hardware (`80` is for A100). If SZ3 generated headers are in a separate directory, add `-DSZ3_EXTRA_INCLUDE_DIR=/path/to/SZ3/build/include`. For MPI only, add `-DEXACTZ_BUILD_SINGLE=OFF`. For single GPU only, add `-DEXACTZ_BUILD_MPI=OFF`. If the MPI wrapper is not discoverable, specify `-DMPI_CXX_COMPILER=/path/to/mpicxx`. Set runtime library search paths according to your dependency installation. This CMake build has not yet been compiled with CUDA.
+If SZ3 generated headers are installed separately, add
+`-DSZ3_EXTRA_INCLUDE_DIR=/path/to/SZ3/build/include`.
 
-## Input and command-line interface
+Build only one driver when the other toolchain is unavailable:
 
-Input is a raw native-endian double-precision scalar field, without a header. The expected size is `nx * ny * nz * 8` bytes. Supply dimensions as `file,nx,ny,nz`; filenames must not contain commas. Inspect each driver's experiment flags before changing them. The examples below use the existing scripts' `sim=0`, `q=5`, `edit_type=1` settings; they are smoke-test starting points, not a validated paper reproduction configuration.
+```bash
+# Single GPU only
+cmake -S . -B build-single -DEXACTZ_BUILD_MPI=OFF
 
-Set `EXACTZ_WORK_DIR` to a writable absolute path, shared by all MPI ranks. Output subdirectories are created there. For single-GPU diagnostics, the existing `SCRATCH/ExtreM_z_outputs` override takes precedence if `SCRATCH` is set. Run each experiment in its own directory because some logs use fixed names or append to existing files.
+# MPI only
+cmake -S . -B build-mpi -DEXACTZ_BUILD_SINGLE=OFF
+```
 
-Single GPU:
+For MPI builds, set `MPI_CXX_COMPILER` if `mpicxx` is not discoverable.
+
+## Input format
+
+The drivers read a raw native-endian, double-precision scalar field without a
+header. The file must contain exactly `nx * ny * nz * 8` bytes. Pass the input
+as `file,nx,ny,nz`; filenames must not contain commas.
+
+Set `EXACTZ_WORK_DIR` to a writable directory before running. Run experiments
+in separate work directories because some diagnostics use fixed filenames or
+append to existing logs.
+
+## Examples
+
+Generate a small test field using only the Python standard library:
+
+```bash
+python3 examples/make_toy.py
+export EXACTZ_WORK_DIR="$PWD/exactz-work"
+```
+
+Run the single-GPU driver:
 
 ```text
 EXaCTz_single file,nx,ny,nz relative_bound compressor sim q edit_type compression edit_mode [zfp_cuda_cr] [q_study] [experiment_mode]
 ```
 
-For SZ3, the single-GPU driver uses a relative error bound; the driver derives an absolute bound from the data range. `q` must be positive. `compression=1` runs compression; `edit_mode` selects an existing repair mode. Optional defaults are `10`, `0`, `0`.
+For example:
 
 ```bash
-export EXACTZ_WORK_DIR="$PWD/exactz-work"
-python3 examples/make_toy.py
-./build/EXaCTz_single "$PWD/toy_f64.bin,32,32,32" 1e-4 sz3 0 5 1 1 0
+./build/EXaCTz_single \
+  "$PWD/toy_f64.bin,32,32,32" 1e-4 sz3 0 5 1 1 0
 ```
 
-Multi-GPU:
+Run the distributed driver with one GPU per MPI rank:
 
 ```text
 EXaCTz_mpi file,nx,ny,nz absolute_bound compressor sim q edit_type compression PX PY PZ preserveFinal result_prefix decp_prefix compression_mode
 ```
 
-All 14 positional arguments are required. `PX*PY*PZ` must equal the MPI rank count. Allocate one GPU per rank. Use `compression_mode=1` for local core-only compression. Mode 0 uses global/precomputed data paths and requires additional validation. The multi-GPU bound is absolute, so do not compare it directly to the single-GPU relative-bound argument. `preserveFinal` is parsed by this snapshot but is not subsequently used; it should not be interpreted as enabling a guarantee. The MPI driver has no supported standalone decompressor command.
+The product `PX*PY*PZ` must equal the MPI rank count. The distributed driver
+uses an absolute error bound, while the single-GPU SZ3 path accepts a relative
+bound. The `preserveFinal` argument is currently parsed but not used.
 
 ```bash
-export EXACTZ_WORK_DIR="$PWD/exactz-work"
-mpiexec -n 2 ./build/EXaCTz_mpi "$PWD/toy_f64.bin,32,32,32" 1e-4 sz3 0 5 1 0 1 1 2 0 smoke "" 1
+mpiexec -n 2 ./build/EXaCTz_mpi \
+  "$PWD/toy_f64.bin,32,32,32" 1e-4 sz3 0 5 1 0 1 1 2 0 smoke "" 1
 ```
 
-On a Slurm GPU allocation, replace `mpiexec -n 2` with your site's GPU-binding `srun` command. For Perlmutter CUDA-aware MPICH, use `MPICH_GPU_SUPPORT_ENABLED=1` and the site's documented GPU allocation/binding settings.
+On clusters, use the site's documented GPU-binding options with `srun` or
+`mpiexec`. CUDA-aware MPI must be enabled according to the MPI
+implementation's documentation.
 
-## Status and limitations
+## Limitations
 
-See `RELEASE_REVIEW.md` for the checks needed before public release. This is a research driver snapshot, not a stable compression/decompression library or portable file format. Do not interpret a successful process exit as proof of topology preservation. Independent topology comparison, reconstruction, and error-bound verification are required on the chosen configurations.
+This repository is a research snapshot. Before using results in a paper or
+benchmark, validate the selected CUDA/compiler/dependency versions and verify
+the reconstructed field, topology, and actual error bound independently.
+Large-grid memory use, concurrent output naming, malformed input handling, and
+all compressor configurations have not been exhaustively validated.
 
-No project license was found in the workspace. The copyright owners must choose and approve a license before public distribution; no license has been invented for this candidate. Dependencies retain their own licenses.
+## License
+
+EXaCTz is released under the [MIT License](LICENSE). Third-party dependencies
+are distributed under their own licenses.
